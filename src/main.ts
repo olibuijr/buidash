@@ -1,6 +1,6 @@
 import './style.css'
 import { SynthEngine } from './audio'
-import { SONGS, buildChart, type Chart } from './songs'
+import type { Chart } from './songs'
 import { Game } from './game'
 
 const canvas = document.getElementById('game') as HTMLCanvasElement
@@ -25,25 +25,42 @@ game.setClock(() => engine.time)
 // Try Blender-exported assets; silently fall back to procedural geometry.
 game.loadAssets('./assets/buidash.glb')
 
+interface SongIndexItem { id: string; name: string; artist: string; bpm: number }
 let current: Chart | null = null
-
-// ---- build the song menu ----
-for (const def of SONGS) {
-  const btn = document.createElement('button')
-  btn.className = 'song-btn'
-  btn.innerHTML = `<span class="s-name">${def.name}</span><span class="s-meta"><span class="s-bpm">${def.bpm}</span> BPM · ${def.bars} bars</span>`
-  btn.addEventListener('click', () => startSong(def.id))
-  songList.appendChild(btn)
-}
+const chartCache = new Map<string, Chart>()
 
 function show(el: HTMLElement, on: boolean) { el.classList.toggle('hidden', !on) }
 
+// ---- build the song menu from the charts manifest ----
+async function buildMenu() {
+  try {
+    const index: SongIndexItem[] = await (await fetch('./charts/index.json')).json()
+    songList.innerHTML = ''
+    for (const s of index) {
+      const btn = document.createElement('button')
+      btn.className = 'song-btn'
+      btn.innerHTML = `<span class="s-name">${s.name}</span><span class="s-meta"><span class="s-bpm">${s.artist}</span> · ${s.bpm} BPM</span>`
+      btn.addEventListener('click', () => startSong(s.id))
+      songList.appendChild(btn)
+    }
+  } catch {
+    songList.innerHTML = '<p class="hint">Could not load songs.</p>'
+  }
+}
+buildMenu()
+
+async function loadChart(id: string): Promise<Chart> {
+  if (chartCache.has(id)) return chartCache.get(id)!
+  const chart: Chart = await (await fetch(`./charts/${id}.json`)).json()
+  chartCache.set(id, chart)
+  return chart
+}
+
 async function startSong(id: string) {
-  const def = SONGS.find((s) => s.id === id)!
-  current = buildChart(def)
+  current = await loadChart(id)
   engine.load(current.music)
   game.loadChart(current)
-  songNameEl.textContent = current.name
+  songNameEl.textContent = current.artist ? `${current.artist} — ${current.name}` : current.name
 
   show(overlay, false)
   show(result, false)
@@ -64,14 +81,14 @@ game.on({
     engine.stop()
     show(hud, false)
     resultTitle.textContent = 'Crashed'
-    resultSub.textContent = `You reached ${Math.floor(pct)}% of ${current?.name}. The spike was on beat — be there with it.`
+    resultSub.textContent = `${Math.floor(pct)}% through ${current?.name}. The spike was on the riff — be there with it.`
     show(result, true)
   },
   onWin: () => {
     engine.stop()
     show(hud, false)
     resultTitle.textContent = 'Cleared!'
-    resultSub.textContent = `${current?.name} — perfect run on the beat.`
+    resultSub.textContent = `${current?.name} — you jumped the whole song.`
     show(result, true)
   },
 })

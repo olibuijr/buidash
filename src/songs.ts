@@ -25,6 +25,7 @@ export interface SongDef {
 export interface Chart {
   id: string
   name: string
+  artist?: string
   bpm: number
   duration: number // seconds
   music: Note[]

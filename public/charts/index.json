@@ -1,0 +1,32 @@
+[
+  {
+    "id": "metallica-enter-sandman",
+    "name": "Enter Sandman",
+    "artist": "Metallica",
+    "bpm": 123
+  },
+  {
+    "id": "metallica-master-of-puppets",
+    "name": "Master of Puppets",
+    "artist": "Metallica",
+    "bpm": 220
+  },
+  {
+    "id": "metallica-nothing-else-matters",
+    "name": "Nothing Else Matters",
+    "artist": "Metallica",
+    "bpm": 69
+  },
+  {
+    "id": "muse-hysteria",
+    "name": "Hysteria",
+    "artist": "Muse",
+    "bpm": 94
+  },
+  {
+    "id": "muse-uprising",
+    "name": "Uprising",
+    "artist": "Muse",
+    "bpm": 127
+  }
+]

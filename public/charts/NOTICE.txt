@@ -1,0 +1,4 @@
+BúiDash charts are derived from publicly-available MIDI sequences (note timing +
+pitch only — no master recordings). They are transformations used for a personal,
+non-commercial rhythm game. Song compositions remain © their respective
+rightsholders (Metallica, Muse). Source MIDIs are not redistributed in this repo.
