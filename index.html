@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="is">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#0a0a16" />
+    <title>BúiDash — beat-matched rhythm runner</title>
+    <meta name="description" content="A Geometry Dash–style rhythm runner where every spike lands on the beat. Built in three.js with Web Audio." />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game"></canvas>
+
+      <!-- HUD -->
+      <div id="hud" class="hidden">
+        <div id="progress"><span id="progress-fill"></span></div>
+        <div id="hud-stats">
+          <span id="song-name"></span>
+          <span id="combo">0</span>
+          <span id="pct">0%</span>
+        </div>
+      </div>
+
+      <!-- Beat countdown -->
+      <div id="countdown" class="hidden"></div>
+
+      <!-- Menu / overlays -->
+      <div id="overlay">
+        <h1 class="logo">BÚI<span>DASH</span></h1>
+        <p class="tag">Every spike is on the beat. Jump the rhythm.</p>
+        <div id="song-list"></div>
+        <p class="hint">Space · Click · Tap to jump</p>
+        <p class="credit">three.js · Web Audio · authored beatmaps</p>
+      </div>
+
+      <!-- Result -->
+      <div id="result" class="hidden">
+        <h2 id="result-title"></h2>
+        <p id="result-sub"></p>
+        <button id="retry">Again</button>
+        <button id="menu-btn">Menu</button>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
