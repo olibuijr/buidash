@@ -2,8 +2,8 @@
 project: BuiDash
 task: Build a three.js beat-matched rhythm runner and deploy to dash.olibuijr.com
 effort: E3
-phase: observe
-progress: 0/24
+phase: complete
+progress: 23/24
 mode: algorithm
 started: 2026-06-27
 updated: 2026-06-27
@@ -102,4 +102,25 @@ Ship a playable three.js rhythm runner where authored-beatmap spikes arrive on t
 
 ## Changelog
 
+- conjectured: a popular three.js GD clone could be forked and rebranded.
+  refuted_by: GitHub search by stars — all JS/TS "geometry dash" repos are tools/renderers/APIs, none a forkable three.js game; and GD's hand-drawn levels are the wrong core for a beat-matched game.
+  learned: for a Guitar-Hero-style beat-matched runner the only sound base is a fresh single-clock engine, not any GD fork.
+  criterion_now: ISC-6, ISC-7, ISC-16 encode the single-clock invariant that a fork could not have provided.
+
+- 2026-06-27: Blender MCP could not be used (addon not installed, no server on :9876, Blender not running). Authored the same artifacts via headless Blender (`blender --background --python scripts/build_assets.py` → GLB). Real Blender output; not the live MCP. Offer standing: start Blender + enable the blend-ai addon and I'll drive it live.
+
 ## Verification
+
+- ISC-1: Bash — `bun install` → "23 packages installed".
+- ISC-2: Bash — `vite build` → dist/index.html + assets/index-*.js (579 kB).
+- ISC-3/4: Grep src/audio.ts — `get time()` clock getter + `createOscillator` synth.
+- ISC-6/16: Grep src/game.ts — spike.x = `time*SPEED` (L159), player.x = `t*SPEED` (L219); only vy/y use `GRAVITY*dt`. Obstacle motion never uses rAF delta.
+- ISC-7/14: src/songs.ts builder emits spikes on the same 8th-note step loop as music; 3 songs (132/144/120 BPM) with distinct patterns.
+- ISC-12/13: Interceptor live — menu lists Búi Rush / Neon Drift / Polar Pulse; HUD + result overlays present.
+- ISC-17: Grep src/ — no http/https/.mp3/.ogg/.wav → "NONE (clean)".
+- ISC-19/20/21: ssh EC2 — vhost enabled, certbot cert deployed, dist rsynced to /var/www/dash.olibuijr.com.
+- ISC-22: `curl -sI https://dash.olibuijr.com/` → HTTP/2 200, serves BúiDash HTML; HTTP→HTTPS 301.
+- ISC-23: `curl -sI .../assets/index-CDn4rwzi.js` → 200, application/javascript, 579042 bytes.
+- ISC-24: `git log` → 2 commits, pushed to github.com/olibuijr/buidash.
+- Live WebGL: Interceptor eval — canvas 1920×1069, webgl context true (three.js initialized).
+- ISC-18: [DEFERRED-VERIFY] — "spikes visibly align with kick/snare" needs Óli's in-browser playtest (Web Audio requires a user gesture + interactive rhythm; cannot probe headlessly). Follow-up: Óli playtest at dash.olibuijr.com.
