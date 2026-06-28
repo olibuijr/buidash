@@ -1,5 +1,5 @@
 // BúiDash service worker — offline app shell (CDN soundfonts are not cached).
-const C = 'buidash-v1'
+const C = 'buidash-v2'
 
 self.addEventListener('install', (e) => {
   self.skipWaiting()

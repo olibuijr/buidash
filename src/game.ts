@@ -346,7 +346,18 @@ export class Game {
   private resize() {
     const w = window.innerWidth, h = window.innerHeight
     this.renderer.setSize(w, h, false); this.composer.setSize(w, h); this.bloom.resolution.set(w, h)
-    this.camera.aspect = w / h; this.camera.updateProjectionMatrix()
+    const aspect = w / h
+    this.camera.aspect = aspect
+    // The camera fov is vertical; in portrait that leaves almost no track visible ahead.
+    // Widen the vertical fov ONLY when the horizontal view would drop below the target,
+    // so portrait stays playable and landscape is untouched.
+    const baseV = 58
+    const hDeg = (2 * Math.atan(Math.tan((baseV / 2) * Math.PI / 180) * aspect)) * 180 / Math.PI
+    const targetH = 72
+    let v = baseV
+    if (hDeg < targetH) v = Math.min(105, (2 * Math.atan(Math.tan((targetH / 2) * Math.PI / 180) / aspect)) * 180 / Math.PI)
+    this.camera.fov = v
+    this.camera.updateProjectionMatrix()
   }
 
   private spawnRing(x: number) {
