@@ -39,6 +39,13 @@ const CEIL = 9.2
 const GATE_HALF = 0.45
 const PLAYER_R = 0.45
 
+export type Difficulty = 'easy' | 'normal' | 'hard'
+const DIFF: Record<Difficulty, { clearY: number; halfScale: number; gatePad: number; cull: number }> = {
+  easy: { clearY: 0.62, halfScale: 0.82, gatePad: 0.35, cull: 3 }, // forgiving + drops every 3rd jump/gate
+  normal: { clearY: CLEAR_Y, halfScale: 1.0, gatePad: 0.0, cull: 0 },
+  hard: { clearY: 0.92, halfScale: 1.14, gatePad: -0.15, cull: 0 },
+}
+
 export type GameState = 'idle' | 'countdown' | 'playing' | 'dead' | 'won'
 
 export interface GameCallbacks {
@@ -125,6 +132,7 @@ export class Game {
   private portals: THREE.Object3D[] = []
 
   private chart: Chart | null = null
+  private diff = DIFF.normal
   private obstacles: Ob[] = []
   private gates: GateM[] = []
   private passX: number[] = []
@@ -244,9 +252,16 @@ export class Game {
     }
   }
 
-  loadChart(chart: Chart) {
+  loadChart(chart: Chart, difficulty: Difficulty = 'normal') {
     this.chart = chart
+    this.diff = DIFF[difficulty]
     const pal = chart.palette
+    // difficulty culls density on Easy
+    let jc = 0
+    const obsList = this.diff.cull
+      ? chart.obstacles.filter((o) => (o.kind === 'spike' || o.kind === 'block') ? jc++ % this.diff.cull !== this.diff.cull - 1 : true)
+      : chart.obstacles
+    const gateList = this.diff.cull ? chart.gates.filter((_, i) => i % this.diff.cull !== this.diff.cull - 1) : chart.gates
     this.accent.set(pal.accent); this.playerColor.set(pal.player)
     this.scene.background = null
     ;((this.sky.material as THREE.ShaderMaterial).uniforms.top.value as THREE.Color).set(pal.bg)
@@ -273,7 +288,7 @@ export class Game {
     const padMat = new THREE.MeshStandardMaterial({ color: PAD_COLOR, emissive: PAD_COLOR, emissiveIntensity: 1.0, roughness: 0.4 })
     const gateMat = new THREE.MeshStandardMaterial({ color: pal.accent, emissive: pal.accent, emissiveIntensity: 0.6, roughness: 0.4, metalness: 0.4 })
 
-    for (const ob of chart.obstacles) {
+    for (const ob of obsList) {
       let mesh: THREE.Object3D, x: number
       if (ob.kind === 'bar') { x = ob.time * SPEED; mesh = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.24, 12), barMat); mesh.position.set(x, BAR_Y, 0) }
       else if (ob.kind === 'block') { x = (ob.time + JUMP_LEAD) * SPEED; mesh = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), blockMat); mesh.position.set(x, 0.45, 0) }
@@ -283,7 +298,7 @@ export class Game {
       this.obstacles.push({ x, kind: ob.kind, mesh })
     }
 
-    for (const g of chart.gates) {
+    for (const g of gateList) {
       const x = g.time * SPEED
       const lo = g.centerY - g.gap / 2, hi = g.centerY + g.gap / 2
       const bottom = new THREE.Mesh(new THREE.BoxGeometry(0.7, Math.max(0.1, lo), 5), gateMat)
@@ -437,11 +452,11 @@ export class Game {
           const dx = Math.abs(px - ob.x)
           if (ob.kind === 'pad') { if (!ob.used && dx < HALF.pad && this.grounded) { ob.used = true; this.vy = PAD_V; this.grounded = false; this.particles.burst(ob.x, 0.3, 0, 20, 6, new THREE.Color(PAD_COLOR)) } }
           else if (ob.kind === 'bar') { if (dx < HALF.bar && py > BAR_AIR_Y) return this.crash(t) }
-          else { if (dx < HALF[ob.kind] && bottom < CLEAR_Y) return this.crash(t) }
+          else { if (dx < HALF[ob.kind] * this.diff.halfScale && bottom < this.diff.clearY) return this.crash(t) }
         }
       } else {
         for (const g of this.gates) {
-          if (Math.abs(px - g.x) < GATE_HALF && (py - PLAYER_R < g.lo || py + PLAYER_R > g.hi)) return this.crash(t)
+          if (Math.abs(px - g.x) < GATE_HALF && (py - PLAYER_R < g.lo - this.diff.gatePad || py + PLAYER_R > g.hi + this.diff.gatePad)) return this.crash(t)
         }
       }
       while (this.nextCombo < this.passX.length && this.passX[this.nextCombo] < px - 0.5) { this.nextCombo++; this.combo++ }

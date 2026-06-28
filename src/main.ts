@@ -1,7 +1,9 @@
 import './style.css'
+import { Midi } from '@tonejs/midi'
 import { SynthEngine } from './audio'
 import type { Chart } from './songs'
-import { Game } from './game'
+import { Game, type Difficulty } from './game'
+import { buildChart, pickPalette } from './chartgen'
 
 const $ = (id: string) => document.getElementById(id)!
 const canvas = $('game') as HTMLCanvasElement
@@ -27,6 +29,9 @@ const resultSub = $('result-sub')
 const resultBest = $('result-best')
 const retryBtn = $('retry') as HTMLButtonElement
 const menuBtn = $('menu-btn') as HTMLButtonElement
+const difficultyEl = $('difficulty')
+const loadMidiBtn = $('load-midi') as HTMLButtonElement
+const fileInput = $('file-input') as HTMLInputElement
 
 const engine = new SynthEngine()
 const game = new Game(canvas)
@@ -38,14 +43,29 @@ let current: Chart | null = null
 let index: SongIndexItem[] = []
 const chartCache = new Map<string, Chart>()
 let paused = false
+let difficulty: Difficulty = ((localStorage.getItem('buidash.diff') as Difficulty) || 'normal')
 
 const show = (el: HTMLElement, on: boolean) => el.classList.toggle('hidden', !on)
 
-// ---- best scores (localStorage) ----
+// ---- best scores ----
 const bestKey = (id: string) => `buidash.best.${id}`
 const getBest = (id: string) => Number(localStorage.getItem(bestKey(id)) || 0)
 const setBest = (id: string, v: number) => localStorage.setItem(bestKey(id), String(Math.round(v)))
 
+// ---- difficulty selector ----
+function applyDifficultyUI() {
+  difficultyEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', (b as HTMLButtonElement).dataset.d === difficulty))
+}
+difficultyEl.querySelectorAll('button').forEach((b) =>
+  b.addEventListener('click', () => {
+    difficulty = (b as HTMLButtonElement).dataset.d as Difficulty
+    localStorage.setItem('buidash.diff', difficulty)
+    applyDifficultyUI()
+  }),
+)
+applyDifficultyUI()
+
+// ---- menu ----
 async function buildMenu() {
   try {
     index = await (await fetch('./charts/index.json')).json()
@@ -75,18 +95,21 @@ async function loadChart(id: string): Promise<Chart> {
 }
 
 async function startSong(id: string) {
-  const meta = index.find((s) => s.id === id)
+  await startChart(await loadChart(id))
+}
+
+async function startChart(chart: Chart) {
+  current = chart
   show(overlay, false)
   show(result, false)
   show(pausedEl, false)
-  loadingText.textContent = `loading ${meta?.name ?? ''}…`
+  loadingText.textContent = `loading ${chart.name}…`
   show(loadingEl, true)
 
-  current = await loadChart(id)
-  await engine.loadInstruments(current.instruments)
-  engine.load(current.music)
-  game.loadChart(current)
-  songNameEl.textContent = current.artist ? `${current.artist} — ${current.name}` : current.name
+  await engine.loadInstruments(chart.instruments)
+  engine.load(chart.music)
+  game.loadChart(chart, difficulty)
+  songNameEl.textContent = chart.artist ? `${chart.artist} — ${chart.name}` : chart.name
 
   show(loadingEl, false)
   show(hud, true)
@@ -95,13 +118,34 @@ async function startSong(id: string) {
   await engine.start(2.0)
 }
 
+// ---- load your own MIDI ----
+loadMidiBtn.addEventListener('click', () => fileInput.click())
+fileInput.addEventListener('change', async () => {
+  const f = fileInput.files?.[0]
+  fileInput.value = ''
+  if (!f) return
+  show(overlay, false)
+  loadingText.textContent = `reading ${f.name}…`
+  show(loadingEl, true)
+  try {
+    const midi = new Midi(await f.arrayBuffer())
+    const name = f.name.replace(/\.(mid|midi)$/i, '')
+    const chart = buildChart(midi, { id: 'custom-' + name, name, artist: 'Your MIDI', palette: pickPalette(name) })
+    await startChart(chart)
+  } catch {
+    show(loadingEl, false)
+    show(overlay, true)
+    flashBanner("couldn't read that MIDI")
+  }
+})
+
 let bannerTimer = 0
 function flashBanner(text: string) {
   countdownEl.style.fontSize = 'clamp(28px, 9vh, 90px)'
   countdownEl.textContent = text
   show(countdownEl, true)
   window.clearTimeout(bannerTimer)
-  bannerTimer = window.setTimeout(() => show(countdownEl, false), 900)
+  bannerTimer = window.setTimeout(() => show(countdownEl, false), 1100)
 }
 
 game.on({
@@ -133,7 +177,7 @@ function endRun(won: boolean, pct: number) {
   renderMenu()
 }
 
-// ---- pause (freezes the audio clock → the game freezes with it) ----
+// ---- pause / mute ----
 function setPaused(p: boolean) {
   paused = p
   game.setPaused(p)
@@ -141,14 +185,11 @@ function setPaused(p: boolean) {
   else { engine.resume(); show(pausedEl, false); pauseBtn.textContent = '❙❙' }
 }
 function togglePause() { if (game.state === 'playing') setPaused(!paused) }
-
-// ---- mute ----
 function toggleMute() { const m = !engine.isMuted; engine.setMuted(m); muteBtn.textContent = m ? '🔇' : '🔊' }
 
 // ---- input ----
 function jumpDown(e: Event) { if (current && game.state !== 'idle' && !paused) { e.preventDefault(); game.setJump(true) } }
 function jumpUp() { game.setJump(false) }
-
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space' || e.code === 'ArrowUp') jumpDown(e)
   else if (e.code === 'Escape') togglePause()
@@ -162,7 +203,7 @@ muteBtn.addEventListener('click', toggleMute)
 pauseBtn.addEventListener('click', togglePause)
 resumeBtn.addEventListener('click', () => setPaused(false))
 pauseMenuBtn.addEventListener('click', toMenu)
-retryBtn.addEventListener('click', () => current && startSong(current.id))
+retryBtn.addEventListener('click', () => current && startChart(current))
 menuBtn.addEventListener('click', toMenu)
 
 function toMenu() {
@@ -174,4 +215,9 @@ function toMenu() {
   show(countdownEl, false)
   show(pausedEl, false)
   show(overlay, true)
+}
+
+// ---- PWA ----
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}))
 }

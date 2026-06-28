@@ -6,6 +6,8 @@
     <meta name="theme-color" content="#0a0a16" />
     <title>BúiDash — beat-matched rhythm runner</title>
     <meta name="description" content="A Geometry Dash–style rhythm runner where every spike lands on the beat. Built in three.js with Web Audio." />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
@@ -49,6 +51,15 @@
         <h1 class="logo">BÚI<span>DASH</span></h1>
         <p class="tag">Every spike is on the beat. Jump the rhythm.</p>
         <div id="song-list"></div>
+        <div id="menu-controls">
+          <div id="difficulty" class="seg" role="group" aria-label="Difficulty">
+            <button data-d="easy">Easy</button>
+            <button data-d="normal" class="on">Normal</button>
+            <button data-d="hard">Hard</button>
+          </div>
+          <button id="load-midi" class="ghost-btn">＋ Load your own MIDI</button>
+          <input id="file-input" type="file" accept=".mid,.midi,audio/midi" hidden />
+        </div>
         <p class="hint">Tap to jump spikes &amp; blocks · stay down under <b style="color:#ffe23d">yellow bars</b> · in <b style="color:#36e0ff">fly</b> sections <b>hold</b> to rise, release to fall</p>
         <p class="credit">three.js · real-instrument soundfont · MIDI-driven beatmaps · cube + ship modes</p>
       </div>
