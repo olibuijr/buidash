@@ -28,5 +28,17 @@
     "name": "Uprising",
     "artist": "Muse",
     "bpm": 127
+  },
+  {
+    "id": "aphex-avril-14th",
+    "name": "Avril 14th",
+    "artist": "Aphex Twin",
+    "bpm": 80
+  },
+  {
+    "id": "aphex-kesson-daslef",
+    "name": "Kesson Daslef",
+    "artist": "Aphex Twin",
+    "bpm": 80
   }
 ]

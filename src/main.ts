@@ -57,15 +57,18 @@ async function loadChart(id: string): Promise<Chart> {
 }
 
 async function startSong(id: string) {
-  current = await loadChart(id)
+  show(overlay, false)
+  show(result, false)
+  countdownEl.textContent = 'loading…'
+  show(countdownEl, true)
+
+  const [chart] = await Promise.all([loadChart(id), engine.loadInstruments()])
+  current = chart
   engine.load(current.music)
   game.loadChart(current)
   songNameEl.textContent = current.artist ? `${current.artist} — ${current.name}` : current.name
 
-  show(overlay, false)
-  show(result, false)
   show(hud, true)
-  show(countdownEl, true)
   await engine.start(2.0)
 }
 
