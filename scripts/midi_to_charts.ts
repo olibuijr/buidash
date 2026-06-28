@@ -53,6 +53,18 @@ const NAMES: Record<string, { name: string; artist: string }> = {
   'aphex-kesson-daslef': { name: 'Kesson Daslef', artist: 'Aphex Twin' },
 }
 
+// Curated per-song design intent (authored by the AI to fit each track).
+// character → obstacle density baseline; fly → how much of the level is ship mode.
+const DESIGN: Record<string, { character: 'gentle' | 'standard' | 'intense'; fly: 'low' | 'med' | 'high' }> = {
+  'metallica-enter-sandman': { character: 'standard', fly: 'med' }, // iconic riff, steady groove
+  'metallica-master-of-puppets': { character: 'intense', fly: 'high' }, // fast thrash — dense + lots of flying
+  'metallica-nothing-else-matters': { character: 'gentle', fly: 'low' }, // ballad — sparse, mostly grounded
+  'muse-hysteria': { character: 'intense', fly: 'high' }, // driving bass — relentless
+  'muse-uprising': { character: 'standard', fly: 'med' }, // anthemic stomp
+  'aphex-avril-14th': { character: 'gentle', fly: 'low' }, // delicate piano — calm, precise
+  'aphex-kesson-daslef': { character: 'standard', fly: 'med' }, // skittery — playful
+}
+
 type NoteKind = 'bass' | 'sub' | 'lead' | 'pad' | 'kick' | 'snare' | 'hat'
 type ObKind = 'spike' | 'block' | 'bar' | 'pad'
 type Mode = 'cube' | 'ship'
@@ -116,76 +128,92 @@ function convert(id: string) {
 
   const duration = Math.min(CAP, music[music.length - 1]?.time ?? 30) + 1.5
 
-  // ---- sections: alternate cube / ship across the song ----
-  const sections: { start: number; end: number; mode: Mode }[] = []
-  let s = LEAD_OFFSET
-  let mode: Mode = 'cube'
-  while (s < duration - 2) {
-    const len = mode === 'cube' ? CUBE_LEN : SHIP_LEN
-    const end = Math.min(s + len, duration)
-    sections.push({ start: +s.toFixed(3), end: +end.toFixed(3), mode })
-    s = end
-    mode = mode === 'cube' ? 'ship' : 'cube'
-  }
+  // ---- read the song's structure: per-second onset density, smoothed + normalised ----
+  const nbins = Math.max(1, Math.ceil(duration))
+  const raw = new Array(nbins).fill(0)
+  for (const n of music) if (n.kind === 'lead' || n.kind === 'kick' || n.kind === 'snare') raw[Math.min(nbins - 1, Math.floor(n.time))]++
+  const sm = raw.map((_, i) => { let s = 0, c = 0; for (let j = -2; j <= 2; j++) { const k = i + j; if (k >= 0 && k < nbins) { s += raw[k]; c++ } } return s / c })
+  const maxD = Math.max(1, ...sm)
+  const intAt = (t: number) => sm[Math.min(nbins - 1, Math.max(0, Math.floor(t)))] / maxD
+  const avgInt = (a: number, b: number) => { let s = 0, c = 0; for (let t = Math.floor(a); t < b; t++) { s += intAt(t); c++ } return c ? s / c : 0 }
 
-  // lead contour for ship gates
+  // lead contour (ship gates follow the melody pitch)
   const leadNotes = (lead ?? bass)?.notes.map((n) => ({ t: n.time - offset, midi: n.midi })).filter((n) => n.t >= 0) ?? []
   const midis = leadNotes.map((n) => n.midi)
   const loMidi = midis.length ? Math.min(...midis) : 55
   const hiMidi = midis.length ? Math.max(...midis) : 79
-  const pitchToY = (m: number) => {
-    if (hiMidi === loMidi) return (Y_LO + Y_HI) / 2
-    return Y_LO + ((m - loMidi) / (hiMidi - loMidi)) * (Y_HI - Y_LO)
-  }
-  const leadMidiAt = (t: number) => {
-    let best = (loMidi + hiMidi) / 2
-    for (const n of leadNotes) { if (n.t <= t + 0.05) best = n.midi; else break }
-    return best
-  }
+  const pitchToY = (m: number) => hiMidi === loMidi ? (Y_LO + Y_HI) / 2 : Y_LO + ((m - loMidi) / (hiMidi - loMidi)) * (Y_HI - Y_LO)
+  const leadMidiAt = (t: number) => { let best = (loMidi + hiMidi) / 2; for (const n of leadNotes) { if (n.t <= t + 0.05) best = n.midi; else break } return best }
 
-  // ---- jump obstacles (cube sections only) ----
+  // onset pool for jump obstacles
   const beatHits: number[] = []
   for (const t of perc) for (const n of t.notes) { const k = drumKind(n.midi); if (k === 'kick' || k === 'snare') beatHits.push(n.time - offset) }
-  const onsets = [...(lead ?? bass)?.notes.map((n) => n.time - offset) ?? [], ...beatHits]
-    .filter((t) => t >= LEAD_OFFSET && t <= CAP && sectionAt(t, sections) === 'cube')
-    .sort((a, b) => a - b)
-  const jumps: number[] = []
-  let last = -Infinity
-  for (const t of onsets) if (t - last >= MIN_GAP) { jumps.push(+t.toFixed(4)); last = t }
+  const allOnsets = [...(lead ?? bass)?.notes.map((n) => n.time - offset) ?? [], ...beatHits].filter((t) => t >= LEAD_OFFSET && t <= CAP).sort((a, b) => a - b)
 
-  const obstacles: { time: number; kind: ObKind }[] = jumps.map((t, i) => ({ time: t, kind: (i % 4 === 3 ? 'block' : 'spike') as ObKind }))
-  // bars in cube lulls; pads in wide-open cube stretches
-  for (let i = 0; i < jumps.length - 1; i++) {
-    const gap = jumps[i + 1] - jumps[i]
-    if (gap > BAR_GAP) {
-      const mid = jumps[i] + gap / 2
-      if (mid - jumps[i] >= 1.6 && jumps[i + 1] - mid >= 1.6) obstacles.push({ time: +mid.toFixed(4), kind: 'bar' })
-    } else if (gap > 2.0 && i % 5 === 2) {
-      const pt = jumps[i] + 0.7
-      if (jumps[i + 1] - pt >= 1.3) obstacles.push({ time: +pt.toFixed(4), kind: 'pad' })
-    }
+  // ---- CURATED DESIGN: phrases follow the song; mode + density chosen per song ----
+  const D = DESIGN[id] ?? { character: 'standard', fly: 'med' }
+  const PHRASE = 9
+  const phrases: { start: number; end: number; I: number }[] = []
+  for (let p = LEAD_OFFSET; p < duration - 2;) { const e = Math.min(p + PHRASE, duration); phrases.push({ start: p, end: e, I: avgInt(p, e) }); p = e }
+  // fly happens on the most intense phrases (never the intro, never two in a row)
+  const flyTarget = ({ low: Math.min(1, phrases.length - 1), med: Math.round(phrases.length * 0.3), high: Math.round(phrases.length * 0.45) } as const)[D.fly]
+  const fly = new Set<number>()
+  for (const { i } of phrases.map((ph, i) => ({ i, I: ph.I })).filter((x) => x.i !== 0).sort((a, b) => b.I - a.I)) {
+    if (fly.size >= flyTarget) break
+    if (!fly.has(i - 1) && !fly.has(i + 1)) fly.add(i)
   }
+  const sections = phrases.map((ph, i) => ({ start: +ph.start.toFixed(3), end: +ph.end.toFixed(3), mode: (fly.has(i) ? 'ship' : 'cube') as Mode }))
+
+  const baseGap = ({ gentle: 0.9, standard: 0.72, intense: 0.6 } as const)[D.character]
+  const gapFor = (I: number, prog: number, intro: boolean) => {
+    let g = baseGap * (1.2 - 0.45 * I) * (1 - 0.12 * prog) // denser when intense, ramps up over the song
+    g = Math.max(0.5, Math.min(1.15, g))
+    return intro ? Math.max(g, 1.0) : g
+  }
+
+  // ---- obstacles (cube phrases) ----
+  const obstacles: { time: number; kind: ObKind }[] = []
+  let obIdx = 0
+  phrases.forEach((ph, i) => {
+    if (fly.has(i)) return
+    const intro = i === 0
+    const gap = gapFor(ph.I, ph.start / duration, intro)
+    const lo = intro ? ph.start + 1.5 : ph.start + 0.1
+    const ons = allOnsets.filter((t) => t >= lo && t < ph.end)
+    const kept: number[] = []
+    let last = -Infinity
+    for (const t of ons) if (t - last >= gap) { kept.push(t); last = t }
+    for (let k = 0; k < kept.length; k++) {
+      const t = kept[k]
+      obstacles.push({ time: +t.toFixed(4), kind: (obIdx % 4 === 3 ? 'block' : 'spike') as ObKind })
+      obIdx++
+      const next = kept[k + 1]
+      if (next) {
+        const g2 = next - t
+        if (g2 > BAR_GAP) { const mid = t + g2 / 2; if (mid - t >= 1.6 && next - mid >= 1.6) obstacles.push({ time: +mid.toFixed(4), kind: 'bar' }) }
+        else if (g2 > 2.0 && k % 5 === 2) { const pt = t + 0.7; if (next - pt >= 1.3) obstacles.push({ time: +pt.toFixed(4), kind: 'pad' }) }
+      }
+    }
+  })
   obstacles.sort((a, b) => a.time - b.time)
 
-  // ---- ship gates (ship sections only) ----
+  // ---- gates (ship phrases; eased entry from the ground) ----
   const gates: { time: number; centerY: number; gap: number }[] = []
   const midY = (Y_LO + Y_HI) / 2
-  for (const sec of sections.filter((x) => x.mode === 'ship')) {
-    // Enter from the ground: first gates are centred + wider so they're reachable.
-    let prevY = midY
-    let gi = 0
-    for (let gt = sec.start + 0.85; gt < sec.end - 0.4; gt += GATE_DT) {
+  phrases.forEach((ph, i) => {
+    if (!fly.has(i)) return
+    const gdt = D.character === 'intense' ? 0.5 : 0.58
+    let prevY = midY, gi = 0
+    for (let gt = ph.start + 0.85; gt < ph.end - 0.4; gt += gdt) {
       let cy = pitchToY(leadMidiAt(gt))
       cy = Math.max(prevY - MAX_SLOPE, Math.min(prevY + MAX_SLOPE, cy))
-      // ease the opening for the first two gates of the section
-      if (gi === 0) cy = midY
-      else if (gi === 1) cy = (cy + midY) / 2
-      const gap = gi === 0 ? GATE_GAP + 1.0 : gi === 1 ? GATE_GAP + 0.5 : GATE_GAP
+      if (gi === 0) cy = midY; else if (gi === 1) cy = (cy + midY) / 2
+      const g = gi === 0 ? GATE_GAP + 1.0 : gi === 1 ? GATE_GAP + 0.5 : GATE_GAP
       prevY = cy
-      gates.push({ time: +gt.toFixed(4), centerY: +cy.toFixed(3), gap: +gap.toFixed(2) })
+      gates.push({ time: +gt.toFixed(4), centerY: +cy.toFixed(3), gap: +g.toFixed(2) })
       gi++
     }
-  }
+  })
 
   const instruments = {
     lead: lead?.inst || 'distortion_guitar',
