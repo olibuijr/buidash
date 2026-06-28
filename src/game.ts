@@ -1,14 +1,12 @@
 // The three.js scene + render loop.
 //
 // SYNC INVARIANT (ISA ISC-6, ISC-16): the horizontal world is driven ONLY by
-// the audio clock. player.x = clock() * SPEED; an obstacle's x is its chart
-// time * SPEED. requestAnimationFrame's delta is used ONLY for the vertical
-// jump arc, spin and cosmetics — never for where an obstacle is.
+// the audio clock — player.x = clock()*SPEED, every obstacle/gate x = its chart
+// time * SPEED. rAF delta drives only the vertical axis + cosmetics.
 //
-// BEAT-MATCH FIX: a JUMP obstacle is placed JUMP_LEAD seconds *ahead* of its
-// musical time, because the cube needs that long to rise after you tap. So you
-// tap ON the beat (when you hear the note) and the cube is airborne over the
-// obstacle a moment later — tapping the beat clears the obstacle.
+// The level alternates two MODES (set by chart.sections):
+//   CUBE — auto-run, tap to jump spikes/blocks, stay down under bars, pads launch.
+//   SHIP — hold to fly up / release to fall, thread the gate corridor.
 
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
@@ -16,19 +14,30 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
-import type { Chart, ObstacleKind } from './songs'
+import type { Chart, ObstacleKind, Mode } from './songs'
 
 const SPEED = 8
 const GRAVITY = 40
 const JUMP_V = 11
 const GROUND_Y = 0.5
-const JUMP_LEAD = 0.275 // s — apex time after a tap (V/G); the beat-match offset
-const SPIN_RATE = 11.5 // ~one flip per jump
-const CLEAR_Y = 0.78 // player bottom must exceed this to clear a jump obstacle
-const BAR_Y = 1.85 // height of a don't-jump bar
-const BAR_AIR_Y = 0.95 // jumping past this under a bar = crash
-const HALF: Record<ObstacleKind, number> = { spike: 0.42, block: 0.46, bar: 0.6 }
+const JUMP_LEAD = 0.275
+const SPIN_RATE = 11.5
+const CLEAR_Y = 0.78
+const BAR_Y = 1.85
+const BAR_AIR_Y = 0.95
+const PAD_V = 16.5
+const HALF: Record<ObstacleKind, number> = { spike: 0.42, block: 0.46, bar: 0.6, pad: 0.5 }
 const BAR_COLOR = 0xffe23d
+const PAD_COLOR = 0x8cff5a
+// ship
+const SHIP_THRUST = 27
+const SHIP_GRAV = 23
+const SHIP_VMAX = 8.5
+const SHIP_MIN_Y = 0.7
+const SHIP_MAX_Y = 7.3
+const CEIL = 9.2
+const GATE_HALF = 0.45
+const PLAYER_R = 0.45
 
 export type GameState = 'idle' | 'countdown' | 'playing' | 'dead' | 'won'
 
@@ -36,6 +45,7 @@ export interface GameCallbacks {
   onProgress?: (pct: number, combo: number) => void
   onCountdown?: (n: number) => void
   onStart?: () => void
+  onMode?: (mode: Mode) => void
   onCrash?: (pct: number) => void
   onWin?: () => void
 }
@@ -85,6 +95,9 @@ class Particles {
   }
 }
 
+interface Ob { x: number; kind: ObstacleKind; mesh: THREE.Object3D; used?: boolean }
+interface GateM { x: number; lo: number; hi: number; meshes: THREE.Object3D[] }
+
 export class Game {
   private renderer: THREE.WebGLRenderer
   private composer: EffectComposer
@@ -109,14 +122,17 @@ export class Game {
   private skyline!: THREE.Group
   private particles!: Particles
   private rings: { mesh: THREE.Mesh; age: number; active: boolean }[] = []
+  private portals: THREE.Object3D[] = []
 
   private chart: Chart | null = null
-  private obstacles: { x: number; kind: ObstacleKind; mesh: THREE.Object3D }[] = []
+  private obstacles: Ob[] = []
+  private gates: GateM[] = []
   private passX: number[] = []
   private nextCombo = 0
   private combo = 0
 
   state: GameState = 'idle'
+  private mode: Mode = 'cube'
   private vy = 0
   private grounded = true
   private jumpHeld = false
@@ -134,7 +150,7 @@ export class Game {
     this.renderer.toneMappingExposure = 1.05
 
     this.scene = new THREE.Scene()
-    this.scene.fog = new THREE.Fog(0x0a0a16, 26, 70)
+    this.scene.fog = new THREE.Fog(0x0a0a16, 28, 75)
     this.camera = new THREE.PerspectiveCamera(58, 1, 0.1, 800)
     this.camera.position.set(6, 3.4, 12.5)
 
@@ -196,18 +212,13 @@ export class Game {
   private buildWorld() {
     this.ground = new THREE.Mesh(new THREE.PlaneGeometry(4000, 26), new THREE.MeshStandardMaterial({ color: 0x141430, roughness: 0.85, metalness: 0.15 }))
     this.ground.rotation.x = -Math.PI / 2; this.ground.position.set(1900, 0, 0); this.scene.add(this.ground)
-
     this.grid = new THREE.GridHelper(4000, 1000, 0xff3da6, 0x223); this.grid.position.set(1900, 0.01, 0)
     this.gridMat = (Array.isArray(this.grid.material) ? this.grid.material[0] : this.grid.material) as THREE.LineBasicMaterial
     this.scene.add(this.grid)
-
     const railGeo = new THREE.BoxGeometry(4000, 0.18, 0.18)
     for (const z of [-6, 6]) { const m = new THREE.Mesh(railGeo, new THREE.MeshBasicMaterial({ color: 0xff3da6 })); m.position.set(1900, 0.2, z); this.rails.push(m); this.scene.add(m) }
-
-    // ground shadow (depth cue)
     this.shadow = new THREE.Mesh(new THREE.CircleGeometry(0.5, 24), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4, depthWrite: false }))
     this.shadow.rotation.x = -Math.PI / 2; this.shadow.position.y = 0.02; this.scene.add(this.shadow)
-
     const pGeo = new THREE.BoxGeometry(1, 1, 1)
     this.accentMat = new THREE.MeshStandardMaterial({ color: 0x36e0ff, emissive: 0x36e0ff, emissiveIntensity: 0.6, roughness: 0.35, metalness: 0.4 })
     const cube = new THREE.Mesh(pGeo, this.accentMat)
@@ -238,44 +249,72 @@ export class Game {
 
     if (this.playerModel) { this.scene.remove(this.player); this.player = this.playerModel.clone(); this.player.position.set(0, GROUND_Y, 0); this.scene.add(this.player) }
 
+    // clear old
     for (const o of this.obstacles) this.scene.remove(o.mesh)
-    this.obstacles = []
+    for (const g of this.gates) for (const m of g.meshes) this.scene.remove(m)
+    for (const p of this.portals) this.scene.remove(p)
+    this.obstacles = []; this.gates = []; this.portals = []
+
     const spikeMat = new THREE.MeshStandardMaterial({ color: pal.spike, emissive: pal.spike, emissiveIntensity: 0.85, roughness: 0.3, metalness: 0.3 })
     const blockMat = new THREE.MeshStandardMaterial({ color: pal.player, emissive: pal.player, emissiveIntensity: 0.7, roughness: 0.3, metalness: 0.4 })
     const barMat = new THREE.MeshBasicMaterial({ color: BAR_COLOR })
+    const padMat = new THREE.MeshStandardMaterial({ color: PAD_COLOR, emissive: PAD_COLOR, emissiveIntensity: 1.0, roughness: 0.4 })
+    const gateMat = new THREE.MeshStandardMaterial({ color: pal.accent, emissive: pal.accent, emissiveIntensity: 0.6, roughness: 0.4, metalness: 0.4 })
+
     for (const ob of chart.obstacles) {
-      let mesh: THREE.Object3D
-      let x: number
-      if (ob.kind === 'bar') {
-        x = ob.time * SPEED
-        mesh = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.24, 12), barMat)
-        mesh.position.set(x, BAR_Y, 0)
-      } else if (ob.kind === 'block') {
-        x = (ob.time + JUMP_LEAD) * SPEED
-        mesh = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), blockMat)
-        mesh.position.set(x, 0.45, 0)
-      } else {
-        x = (ob.time + JUMP_LEAD) * SPEED
-        if (this.spikeProto) { mesh = this.spikeProto.clone() } else { mesh = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1, 4), spikeMat); (mesh as THREE.Mesh).rotation.y = Math.PI / 4 }
-        mesh.position.set(x, 0.5, 0)
-      }
+      let mesh: THREE.Object3D, x: number
+      if (ob.kind === 'bar') { x = ob.time * SPEED; mesh = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.24, 12), barMat); mesh.position.set(x, BAR_Y, 0) }
+      else if (ob.kind === 'block') { x = (ob.time + JUMP_LEAD) * SPEED; mesh = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), blockMat); mesh.position.set(x, 0.45, 0) }
+      else if (ob.kind === 'pad') { x = ob.time * SPEED; mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.16, 16), padMat); mesh.position.set(x, 0.08, 0) }
+      else { x = (ob.time + JUMP_LEAD) * SPEED; if (this.spikeProto) mesh = this.spikeProto.clone(); else { mesh = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1, 4), spikeMat); (mesh as THREE.Mesh).rotation.y = Math.PI / 4 } mesh.position.set(x, 0.5, 0) }
       this.scene.add(mesh)
       this.obstacles.push({ x, kind: ob.kind, mesh })
     }
-    this.passX = this.obstacles.map((o) => o.x).sort((a, b) => a - b)
+
+    for (const g of chart.gates) {
+      const x = g.time * SPEED
+      const lo = g.centerY - g.gap / 2, hi = g.centerY + g.gap / 2
+      const bottom = new THREE.Mesh(new THREE.BoxGeometry(0.7, Math.max(0.1, lo), 5), gateMat)
+      bottom.position.set(x, lo / 2, 0)
+      const top = new THREE.Mesh(new THREE.BoxGeometry(0.7, Math.max(0.1, CEIL - hi), 5), gateMat)
+      top.position.set(x, (CEIL + hi) / 2, 0)
+      this.scene.add(bottom); this.scene.add(top)
+      this.gates.push({ x, lo, hi, meshes: [bottom, top] })
+    }
+
+    // portals at section boundaries
+    for (let i = 1; i < chart.sections.length; i++) {
+      const sec = chart.sections[i]
+      const col = sec.mode === 'ship' ? 0x36e0ff : 0xff9a3d
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(2.4, 0.16, 10, 28), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.8 }))
+      ring.rotation.y = Math.PI / 2; ring.position.set(sec.start * SPEED, 3, 0)
+      this.scene.add(ring); this.portals.push(ring)
+    }
+
+    this.passX = [...this.obstacles.filter((o) => o.kind !== 'pad').map((o) => o.x), ...this.gates.map((g) => g.x)].sort((a, b) => a - b)
     this.reset()
+  }
+
+  private modeAt(t: number): Mode {
+    if (!this.chart) return 'cube'
+    for (const s of this.chart.sections) if (t >= s.start && t < s.end) return s.mode
+    return 'cube'
   }
 
   reset() {
     this.vy = 0; this.grounded = true; this.spin = 0; this.nextCombo = 0; this.combo = 0
-    this.lastBeat = -1; this.shake = 0
-    this.player.visible = true; this.player.position.set(0, GROUND_Y, 0); this.player.scale.setScalar(1); this.player.rotation.z = 0
+    this.lastBeat = -1; this.shake = 0; this.mode = 'cube'
+    for (const o of this.obstacles) o.used = false
+    this.player.visible = true; this.player.position.set(0, GROUND_Y, 0); this.player.scale.setScalar(1); this.player.rotation.set(0, 0, 0)
     this.shadow.visible = true
     this.state = 'countdown'
   }
 
-  setJump(held: boolean) { this.jumpHeld = held; if (held && this.grounded && this.state === 'playing') this.jump() }
-  private jump() { this.vy = JUMP_V; this.grounded = false; this.particles.burst(this.player.position.x, GROUND_Y, 0, 14, 4, this.playerColor) }
+  setJump(held: boolean) {
+    this.jumpHeld = held
+    if (held && this.mode === 'cube' && this.grounded && this.state === 'playing') this.jump()
+  }
+  private jump() { this.vy = JUMP_V; this.grounded = false; this.particles.burst(this.player.position.x, this.player.position.y, 0, 14, 4, this.playerColor) }
 
   private resize() {
     const w = window.innerWidth, h = window.innerHeight
@@ -306,29 +345,47 @@ export class Game {
       else { this.state = 'playing'; this.cb.onStart?.() }
     }
 
-    // horizontal position from the AUDIO clock (the sync invariant)
     const px = t * SPEED
     this.player.position.x = px
 
+    // mode switch
     if (this.state === 'playing' || this.state === 'won') {
-      // vertical jump arc (frame dt — not sync-critical)
-      if (!this.grounded) {
-        this.vy -= GRAVITY * dt
-        this.player.position.y += this.vy * dt
-        if (this.player.position.y <= GROUND_Y) { this.player.position.y = GROUND_Y; this.vy = 0; this.grounded = true; if (this.jumpHeld) this.jump() }
+      const m = this.modeAt(t)
+      if (m !== this.mode) {
+        this.mode = m
+        this.vy = 0; this.grounded = false
+        this.cb.onMode?.(m)
+        this.particles.burst(px, this.player.position.y, 0, 24, 6, this.accent)
       }
-      // ROLL ONLY IN AIR — flat on the ground (GD behaviour)
-      if (this.grounded) { this.player.rotation.z = 0; this.spin = 0 }
-      else { this.spin += SPIN_RATE * dt; this.player.rotation.z = -this.spin }
+    }
+
+    if (this.state === 'playing' || this.state === 'won') {
+      if (this.mode === 'cube') {
+        if (!this.grounded) {
+          this.vy -= GRAVITY * dt
+          this.player.position.y += this.vy * dt
+          if (this.player.position.y <= GROUND_Y) { this.player.position.y = GROUND_Y; this.vy = 0; this.grounded = true; if (this.jumpHeld) this.jump() }
+        }
+        if (this.grounded) { this.player.rotation.z = 0; this.spin = 0 }
+        else { this.spin += SPIN_RATE * dt; this.player.rotation.z = -this.spin }
+      } else {
+        // SHIP: hold to thrust up, release to fall
+        this.vy += (this.jumpHeld ? SHIP_THRUST : -SHIP_GRAV) * dt
+        this.vy = Math.max(-SHIP_VMAX, Math.min(SHIP_VMAX, this.vy))
+        this.player.position.y += this.vy * dt
+        if (this.player.position.y < SHIP_MIN_Y) { this.player.position.y = SHIP_MIN_Y; this.vy = 0 }
+        if (this.player.position.y > SHIP_MAX_Y) { this.player.position.y = SHIP_MAX_Y; this.vy = 0 }
+        this.player.rotation.z = THREE.MathUtils.clamp(this.vy * 0.06, -0.5, 0.5)
+        if (this.jumpHeld) this.particles.spawn(px - 0.4, this.player.position.y - 0.3, 0, -2, -1, 0, this.playerColor, 0.35)
+      }
       if (this.player.visible) this.particles.spawn(px - 0.4, this.player.position.y, 0, -1 - Math.random(), Math.random() * 0.5, 0, this.playerColor, 0.4)
     }
 
-    // beat detection → shockwave ring
+    // beat ring
     const secPerBeat = 60 / chart.bpm
     if (t > 0) { const beat = Math.floor(t / secPerBeat); if (beat > this.lastBeat) { this.lastBeat = beat; this.spawnRing(px) } }
     const beatPhase = t > 0 ? (t / secPerBeat) % 1 : 1
     const pulse = Math.max(0, 1 - beatPhase)
-
     this.beatLight.position.x = px + 2
     this.beatLight.intensity = 1.5 + pulse * 7
     this.accentMat.emissiveIntensity = 0.5 + pulse * 1.1
@@ -336,35 +393,42 @@ export class Game {
     this.bloom.strength = 0.85 + pulse * 0.5
     if (this.state === 'playing') this.player.scale.setScalar(1 + pulse * 0.13)
 
-    // shadow tracks the player, shrinks/fades when airborne
     const air = this.player.position.y - GROUND_Y
     this.shadow.position.x = px
-    const sc = Math.max(0.4, 1 - air * 0.35)
-    this.shadow.scale.setScalar(sc)
-    ;(this.shadow.material as THREE.MeshBasicMaterial).opacity = Math.max(0.08, 0.4 - air * 0.12)
+    this.shadow.scale.setScalar(Math.max(0.35, 1 - air * 0.18))
+    ;(this.shadow.material as THREE.MeshBasicMaterial).opacity = Math.max(0.05, 0.4 - air * 0.07)
 
     for (const r of this.rings) {
       if (!r.active) continue
       r.age += dt; r.mesh.scale.setScalar(1 + r.age * 9)
-      const m = r.mesh.material as THREE.MeshBasicMaterial; m.opacity = Math.max(0, 0.9 - r.age * 1.6)
-      if (m.opacity <= 0) { r.active = false; r.mesh.visible = false }
+      const mm = r.mesh.material as THREE.MeshBasicMaterial; mm.opacity = Math.max(0, 0.9 - r.age * 1.6)
+      if (mm.opacity <= 0) { r.active = false; r.mesh.visible = false }
     }
+    for (const p of this.portals) p.rotation.x += dt * 1.5
 
     const camX = px + 6
     this.sky.position.copy(this.camera.position)
     this.stars.position.x = camX * 0.85
     this.skyline.position.x = camX * 0.45
     this.shake = Math.max(0, this.shake - dt * 2.2)
-    this.camera.position.set(camX + (Math.random() - 0.5) * this.shake, 3.4 + (Math.random() - 0.5) * this.shake, 12.5 - pulse * 0.5)
-    this.camera.lookAt(camX, 1.6, -2)
+    const camY = (this.mode === 'ship' ? 4.3 : 3.4) + (Math.random() - 0.5) * this.shake
+    this.camera.position.set(camX + (Math.random() - 0.5) * this.shake, camY, 12.5 - pulse * 0.5)
+    this.camera.lookAt(camX, this.mode === 'ship' ? 2.6 : 1.6, -2)
 
     if (this.state === 'playing') {
       const py = this.player.position.y
       const bottom = py - 0.5
-      for (const ob of this.obstacles) {
-        const dx = Math.abs(px - ob.x)
-        if (ob.kind === 'bar') { if (dx < HALF.bar && py > BAR_AIR_Y) return this.crash(t) }
-        else { if (dx < HALF[ob.kind] && bottom < CLEAR_Y) return this.crash(t) }
+      if (this.mode === 'cube') {
+        for (const ob of this.obstacles) {
+          const dx = Math.abs(px - ob.x)
+          if (ob.kind === 'pad') { if (!ob.used && dx < HALF.pad && this.grounded) { ob.used = true; this.vy = PAD_V; this.grounded = false; this.particles.burst(ob.x, 0.3, 0, 20, 6, new THREE.Color(PAD_COLOR)) } }
+          else if (ob.kind === 'bar') { if (dx < HALF.bar && py > BAR_AIR_Y) return this.crash(t) }
+          else { if (dx < HALF[ob.kind] && bottom < CLEAR_Y) return this.crash(t) }
+        }
+      } else {
+        for (const g of this.gates) {
+          if (Math.abs(px - g.x) < GATE_HALF && (py - PLAYER_R < g.lo || py + PLAYER_R > g.hi)) return this.crash(t)
+        }
       }
       while (this.nextCombo < this.passX.length && this.passX[this.nextCombo] < px - 0.5) { this.nextCombo++; this.combo++ }
       this.cb.onProgress?.(Math.min(100, Math.max(0, (t / chart.duration) * 100)), this.combo)
@@ -374,7 +438,7 @@ export class Game {
 
   private crash(t: number) {
     this.state = 'dead'; this.shake = 0.9
-    this.particles.burst(this.player.position.x, GROUND_Y, 0, 160, 13, new THREE.Color(this.chart!.palette.spike))
+    this.particles.burst(this.player.position.x, this.player.position.y, 0, 160, 13, new THREE.Color(this.chart!.palette.spike))
     this.player.visible = false; this.shadow.visible = false
     this.cb.onCrash?.(this.chart ? Math.min(100, (t / this.chart.duration) * 100) : 0)
   }

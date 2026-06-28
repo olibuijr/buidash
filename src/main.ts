@@ -62,8 +62,8 @@ async function startSong(id: string) {
   countdownEl.textContent = 'loading…'
   show(countdownEl, true)
 
-  const [chart] = await Promise.all([loadChart(id), engine.loadInstruments()])
-  current = chart
+  current = await loadChart(id)
+  await engine.loadInstruments(current.instruments)
   engine.load(current.music)
   game.loadChart(current)
   songNameEl.textContent = current.artist ? `${current.artist} — ${current.name}` : current.name
@@ -72,9 +72,19 @@ async function startSong(id: string) {
   await engine.start(2.0)
 }
 
+let bannerTimer = 0
+function flashBanner(text: string) {
+  countdownEl.style.fontSize = 'clamp(28px, 9vh, 90px)'
+  countdownEl.textContent = text
+  show(countdownEl, true)
+  window.clearTimeout(bannerTimer)
+  bannerTimer = window.setTimeout(() => show(countdownEl, false), 900)
+}
+
 game.on({
-  onCountdown: (n) => { countdownEl.textContent = String(n) },
+  onCountdown: (n) => { countdownEl.style.fontSize = ''; countdownEl.textContent = String(n) },
   onStart: () => { show(countdownEl, false) },
+  onMode: (mode) => { flashBanner(mode === 'ship' ? '✈ HOLD TO FLY' : '⬆ JUMP') },
   onProgress: (pct, combo) => {
     progressFill.style.width = pct.toFixed(1) + '%'
     pctEl.textContent = Math.floor(pct) + '%'

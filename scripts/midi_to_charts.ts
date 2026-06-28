@@ -1,11 +1,12 @@
 // Offline MIDI → BúiDash chart converter.
 //
-// For each .mid in midi-src/, parse with @tonejs/midi and emit a chart JSON in
-// public/charts/:
-//   - music:     song notes mapped onto the synth/soundfont voices (MIDI numbers)
-//   - obstacles: riff + kick/snare onsets become JUMP obstacles (spike/block);
-//                long gaps get a DON'T-JUMP bar. Both come from the same note
-//                data the music is scheduled from, so they stay on the beat.
+// Builds a multi-section level from each MIDI:
+//   - music:     song notes mapped to synth/soundfont voices (MIDI numbers)
+//   - sections:  alternating CUBE (jump) and SHIP (fly) stretches
+//   - obstacles: CUBE-section jump targets — spike/block (jump), bar (stay down),
+//                pad (auto-launch). From riff + kick/snare onsets → on the beat.
+//   - gates:     SHIP-section corridor gates whose opening follows the melody
+//                pitch, so you fly the tune's contour.
 //
 // Only the composition (note data) is used — no master recording is touched.
 //
@@ -20,13 +21,19 @@ const OUT = 'public/charts'
 mkdirSync(OUT, { recursive: true })
 
 const CAP = 105
-const MIN_GAP = 0.62 // s between jump obstacles (one fair jump each)
-const BAR_GAP = 2.6 // a quiet stretch this long earns a don't-jump bar
+const MIN_GAP = 0.62
+const BAR_GAP = 2.6
 const LEAD_OFFSET = 1.0
 const MAX_MUSIC_NOTES = 4500
+const CUBE_LEN = 15 // seconds per cube section
+const SHIP_LEN = 11 // seconds per ship section
+const GATE_DT = 0.55 // spacing of flight gates
+const GATE_GAP = 3.4 // vertical opening of a gate (generous)
+const Y_LO = 2.0
+const Y_HI = 5.8
+const MAX_SLOPE = 1.4 // max centre-Y change between gates (flyable)
 
 interface Pal { bg: number; ground: number; player: number; accent: number; spike: number }
-
 const PAL: Record<string, Pal> = {
   'metallica-enter-sandman': { bg: 0x06101c, ground: 0x0e1a2c, player: 0x66ccff, accent: 0xffffff, spike: 0x36e0ff },
   'metallica-master-of-puppets': { bg: 0x140707, ground: 0x241010, player: 0xff7a3d, accent: 0xff3d2e, spike: 0xffae42 },
@@ -47,8 +54,14 @@ const NAMES: Record<string, { name: string; artist: string }> = {
 }
 
 type NoteKind = 'bass' | 'sub' | 'lead' | 'pad' | 'kick' | 'snare' | 'hat'
-type ObKind = 'spike' | 'block' | 'bar'
+type ObKind = 'spike' | 'block' | 'bar' | 'pad'
+type Mode = 'cube' | 'ship'
 interface OutNote { time: number; kind: NoteKind; midi?: number; dur?: number; gain?: number }
+interface PT { perc: boolean; avg: number; leadScore: number; inst: string; notes: { midi: number; time: number; dur: number; vel: number }[] }
+
+// GM instrument name → soundfont (MusyngKite/gleitz) file name.
+const normInst = (name: string) =>
+  (name || 'acoustic_grand_piano').toLowerCase().replace(/[()]/g, '').trim().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
 
 function drumKind(m: number): NoteKind | null {
   if (m === 35 || m === 36) return 'kick'
@@ -57,7 +70,10 @@ function drumKind(m: number): NoteKind | null {
   return null
 }
 
-interface PT { perc: boolean; avg: number; leadScore: number; notes: { midi: number; time: number; dur: number; vel: number }[] }
+function sectionAt(t: number, sections: { start: number; end: number; mode: Mode }[]): Mode {
+  for (const s of sections) if (t >= s.start && t < s.end) return s.mode
+  return 'cube'
+}
 
 function convert(id: string) {
   const buf = readFileSync(join(SRC, id + '.mid'))
@@ -71,7 +87,7 @@ function convert(id: string) {
     const notes = t.notes.map((n) => ({ midi: n.midi, time: n.time, dur: n.duration, vel: n.velocity }))
     const avg = notes.reduce((s, n) => s + n.midi, 0) / notes.length
     const leadScore = notes.filter((n) => n.midi >= 52 && n.midi <= 88).length
-    tracks.push({ perc, avg, leadScore, notes })
+    tracks.push({ perc, avg, leadScore, inst: normInst(t.instrument?.name ?? ''), notes })
   }
 
   const melodic = tracks.filter((t) => !t.perc)
@@ -98,40 +114,88 @@ function convert(id: string) {
   music.sort((a, b) => a.time - b.time)
   if (music.length > MAX_MUSIC_NOTES) music.length = MAX_MUSIC_NOTES
 
-  // jump-obstacle source: riff onsets + kick/snare, thinned to a jumpable cadence
+  const duration = Math.min(CAP, music[music.length - 1]?.time ?? 30) + 1.5
+
+  // ---- sections: alternate cube / ship across the song ----
+  const sections: { start: number; end: number; mode: Mode }[] = []
+  let s = LEAD_OFFSET
+  let mode: Mode = 'cube'
+  while (s < duration - 2) {
+    const len = mode === 'cube' ? CUBE_LEN : SHIP_LEN
+    const end = Math.min(s + len, duration)
+    sections.push({ start: +s.toFixed(3), end: +end.toFixed(3), mode })
+    s = end
+    mode = mode === 'cube' ? 'ship' : 'cube'
+  }
+
+  // lead contour for ship gates
+  const leadNotes = (lead ?? bass)?.notes.map((n) => ({ t: n.time - offset, midi: n.midi })).filter((n) => n.t >= 0) ?? []
+  const midis = leadNotes.map((n) => n.midi)
+  const loMidi = midis.length ? Math.min(...midis) : 55
+  const hiMidi = midis.length ? Math.max(...midis) : 79
+  const pitchToY = (m: number) => {
+    if (hiMidi === loMidi) return (Y_LO + Y_HI) / 2
+    return Y_LO + ((m - loMidi) / (hiMidi - loMidi)) * (Y_HI - Y_LO)
+  }
+  const leadMidiAt = (t: number) => {
+    let best = (loMidi + hiMidi) / 2
+    for (const n of leadNotes) { if (n.t <= t + 0.05) best = n.midi; else break }
+    return best
+  }
+
+  // ---- jump obstacles (cube sections only) ----
   const beatHits: number[] = []
   for (const t of perc) for (const n of t.notes) { const k = drumKind(n.midi); if (k === 'kick' || k === 'snare') beatHits.push(n.time - offset) }
   const onsets = [...(lead ?? bass)?.notes.map((n) => n.time - offset) ?? [], ...beatHits]
-    .filter((t) => t >= LEAD_OFFSET && t <= CAP)
+    .filter((t) => t >= LEAD_OFFSET && t <= CAP && sectionAt(t, sections) === 'cube')
     .sort((a, b) => a - b)
   const jumps: number[] = []
   let last = -Infinity
   for (const t of onsets) if (t - last >= MIN_GAP) { jumps.push(+t.toFixed(4)); last = t }
 
   const obstacles: { time: number; kind: ObKind }[] = jumps.map((t, i) => ({ time: t, kind: (i % 4 === 3 ? 'block' : 'spike') as ObKind }))
-  // don't-jump bars in the quiet stretches
+  // bars in cube lulls; pads in wide-open cube stretches
   for (let i = 0; i < jumps.length - 1; i++) {
     const gap = jumps[i + 1] - jumps[i]
     if (gap > BAR_GAP) {
-      const bt = jumps[i] + gap / 2
-      if (bt - jumps[i] >= 1.6 && jumps[i + 1] - bt >= 1.6) obstacles.push({ time: +bt.toFixed(4), kind: 'bar' })
+      const mid = jumps[i] + gap / 2
+      if (mid - jumps[i] >= 1.6 && jumps[i + 1] - mid >= 1.6) obstacles.push({ time: +mid.toFixed(4), kind: 'bar' })
+    } else if (gap > 2.0 && i % 5 === 2) {
+      const pt = jumps[i] + 0.7
+      if (jumps[i + 1] - pt >= 1.3) obstacles.push({ time: +pt.toFixed(4), kind: 'pad' })
     }
   }
   obstacles.sort((a, b) => a.time - b.time)
 
-  const duration = Math.min(CAP, music[music.length - 1]?.time ?? 30) + 1.5
+  // ---- ship gates (ship sections only) ----
+  const gates: { time: number; centerY: number; gap: number }[] = []
+  for (const sec of sections.filter((x) => x.mode === 'ship')) {
+    let prevY = pitchToY(leadMidiAt(sec.start))
+    for (let gt = sec.start + 0.7; gt < sec.end - 0.4; gt += GATE_DT) {
+      let cy = pitchToY(leadMidiAt(gt))
+      cy = Math.max(prevY - MAX_SLOPE, Math.min(prevY + MAX_SLOPE, cy))
+      prevY = cy
+      gates.push({ time: +gt.toFixed(4), centerY: +cy.toFixed(3), gap: GATE_GAP })
+    }
+  }
+
+  const instruments = {
+    lead: lead?.inst || 'distortion_guitar',
+    bass: bass?.inst || 'electric_bass_finger',
+    pad: padTracks[0]?.inst || 'string_ensemble_1',
+  }
+
   const meta = NAMES[id]
-  const chart = { id, name: meta.name, artist: meta.artist, bpm, duration: +duration.toFixed(2), palette: PAL[id], music, obstacles }
+  const chart = { id, name: meta.name, artist: meta.artist, bpm, duration: +duration.toFixed(2), palette: PAL[id], instruments, music, sections, obstacles, gates }
   writeFileSync(join(OUT, id + '.json'), JSON.stringify(chart))
-  const bars = obstacles.filter((o) => o.kind === 'bar').length
-  return { ...meta, id, bpm, notes: music.length, jumps: jumps.length, bars, dur: chart.duration }
+  return { ...meta, id, bpm, instruments, notes: music.length, secs: sections.length, ships: sections.filter((x) => x.mode === 'ship').length, obs: obstacles.length, gates: gates.length, dur: chart.duration }
 }
 
 const index: any[] = []
 for (const id of Object.keys(NAMES)) {
   const r = convert(id)
   index.push({ id: r.id, name: r.name, artist: r.artist, bpm: r.bpm })
-  console.log(`${r.artist} - ${r.name}: ${r.notes} notes, ${r.jumps} jumps + ${r.bars} bars, ${r.dur}s @ ${r.bpm}bpm`)
+  console.log(`${r.artist} - ${r.name}: ${r.secs} sections (${r.ships} ship), ${r.obs} obstacles, ${r.gates} gates, ${r.dur}s`)
 }
 writeFileSync(join(OUT, 'index.json'), JSON.stringify(index, null, 2))
 console.log(`\nwrote ${index.length} charts + index.json`)
