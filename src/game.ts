@@ -140,6 +140,7 @@ export class Game {
   private spin = 0
   private lastBeat = -1
   private shake = 0
+  private paused = false
   private accent = new THREE.Color(0xff3da6)
   private playerColor = new THREE.Color(0x36e0ff)
 
@@ -178,11 +179,13 @@ export class Game {
   async loadAssets(url: string): Promise<boolean> {
     try {
       const gltf = await new GLTFLoader().loadAsync(url)
-      const p = gltf.scene.getObjectByName('player'); const s = gltf.scene.getObjectByName('spike')
-      if (p) this.playerModel = p; if (s) this.spikeProto = s
-      return Boolean(p || s)
+      const s = gltf.scene.getObjectByName('spike')
+      if (s) this.spikeProto = s // keep the Blender spike; player is the procedural cube (so it can have a face)
+      return Boolean(s)
     } catch { return false }
   }
+
+  setPaused(p: boolean) { this.paused = p }
 
   private buildSky() {
     const mat = new THREE.ShaderMaterial({
@@ -223,7 +226,16 @@ export class Game {
     this.accentMat = new THREE.MeshStandardMaterial({ color: 0x36e0ff, emissive: 0x36e0ff, emissiveIntensity: 0.6, roughness: 0.35, metalness: 0.4 })
     const cube = new THREE.Mesh(pGeo, this.accentMat)
     const edges = new THREE.LineSegments(new THREE.EdgesGeometry(pGeo), new THREE.LineBasicMaterial({ color: 0xffffff }))
-    this.player = new THREE.Group(); this.player.add(cube); this.player.add(edges); this.player.position.set(0, GROUND_Y, 0); this.scene.add(this.player)
+    this.player = new THREE.Group(); this.player.add(cube); this.player.add(edges)
+    // face — eyes on the camera-facing side give the icon character (and read its spin)
+    const eyeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.25, roughness: 0.4 })
+    const pupilMat = new THREE.MeshBasicMaterial({ color: 0x05060a })
+    for (const sx of [-0.2, 0.2]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.14, 16, 16), eyeMat); eye.position.set(sx, 0.13, 0.46); eye.scale.z = 0.5
+      const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 12), pupilMat); pupil.position.set(sx + 0.045, 0.13, 0.55)
+      this.player.add(eye); this.player.add(pupil)
+    }
+    this.player.position.set(0, GROUND_Y, 0); this.scene.add(this.player)
   }
   private buildRings() {
     for (let i = 0; i < 10; i++) {
@@ -332,9 +344,11 @@ export class Game {
     requestAnimationFrame((t) => this.loop(t))
     const dt = this.lastFrame ? Math.min((now - this.lastFrame) / 1000, 0.05) : 0
     this.lastFrame = now
-    const t = this.clock()
-    if (this.chart) this.update(t, dt)
-    this.particles.update(dt)
+    if (!this.paused) {
+      const t = this.clock()
+      if (this.chart) this.update(t, dt)
+      this.particles.update(dt)
+    }
     this.composer.render()
   }
 

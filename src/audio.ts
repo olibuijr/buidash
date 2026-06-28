@@ -41,6 +41,8 @@ export class SynthEngine {
 
   private cache = new Map<string, any>()
   private cur: { lead: any; bass: any; pad: any } = { lead: null, bass: null, pad: null }
+  private muted = false
+  private readonly vol = 0.9
 
   started = false
 
@@ -98,7 +100,7 @@ export class SynthEngine {
     this.nextIdx = 0
     this.started = true
     this.master.gain.cancelScheduledValues(this.ctx.currentTime)
-    this.master.gain.setValueAtTime(0.9, this.ctx.currentTime)
+    this.master.gain.setValueAtTime(this.muted ? 0.0001 : this.vol, this.ctx.currentTime)
     if (this.timer) clearInterval(this.timer)
     const myEpoch = this.epoch
     this.tick(myEpoch)
@@ -112,6 +114,19 @@ export class SynthEngine {
     this.master.gain.cancelScheduledValues(this.ctx.currentTime)
     this.master.gain.setValueAtTime(0.0001, this.ctx.currentTime)
   }
+
+  /** Pause/resume by suspending the audio clock — the game's time freezes with it. */
+  async pause() { try { await this.ctx.suspend() } catch {} }
+  async resume() { try { await this.ctx.resume() } catch {} }
+
+  setMuted(m: boolean) {
+    this.muted = m
+    if (this.started) {
+      this.master.gain.cancelScheduledValues(this.ctx.currentTime)
+      this.master.gain.setValueAtTime(m ? 0.0001 : this.vol, this.ctx.currentTime)
+    }
+  }
+  get isMuted() { return this.muted }
 
   get time(): number {
     const lat = (this.ctx as any).outputLatency ?? this.ctx.baseLatency ?? 0

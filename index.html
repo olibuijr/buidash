@@ -22,8 +22,27 @@
         </div>
       </div>
 
+      <!-- Top controls -->
+      <div id="topbar" class="hidden">
+        <button id="pause-btn" title="Pause (Esc)">❙❙</button>
+        <button id="mute-btn" title="Mute (M)">🔊</button>
+      </div>
+
       <!-- Beat countdown -->
       <div id="countdown" class="hidden"></div>
+
+      <!-- Loading -->
+      <div id="loading" class="hidden">
+        <div class="spinner"></div>
+        <p id="loading-text">loading…</p>
+      </div>
+
+      <!-- Paused -->
+      <div id="paused" class="hidden">
+        <h2>Paused</h2>
+        <button id="resume-btn">Resume</button>
+        <button id="pause-menu-btn">Menu</button>
+      </div>
 
       <!-- Menu / overlays -->
       <div id="overlay">
@@ -38,6 +57,7 @@
       <div id="result" class="hidden">
         <h2 id="result-title"></h2>
         <p id="result-sub"></p>
+        <p id="result-best"></p>
         <button id="retry">Again</button>
         <button id="menu-btn">Menu</button>
       </div>

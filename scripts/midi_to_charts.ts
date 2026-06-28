@@ -169,13 +169,21 @@ function convert(id: string) {
 
   // ---- ship gates (ship sections only) ----
   const gates: { time: number; centerY: number; gap: number }[] = []
+  const midY = (Y_LO + Y_HI) / 2
   for (const sec of sections.filter((x) => x.mode === 'ship')) {
-    let prevY = pitchToY(leadMidiAt(sec.start))
-    for (let gt = sec.start + 0.7; gt < sec.end - 0.4; gt += GATE_DT) {
+    // Enter from the ground: first gates are centred + wider so they're reachable.
+    let prevY = midY
+    let gi = 0
+    for (let gt = sec.start + 0.85; gt < sec.end - 0.4; gt += GATE_DT) {
       let cy = pitchToY(leadMidiAt(gt))
       cy = Math.max(prevY - MAX_SLOPE, Math.min(prevY + MAX_SLOPE, cy))
+      // ease the opening for the first two gates of the section
+      if (gi === 0) cy = midY
+      else if (gi === 1) cy = (cy + midY) / 2
+      const gap = gi === 0 ? GATE_GAP + 1.0 : gi === 1 ? GATE_GAP + 0.5 : GATE_GAP
       prevY = cy
-      gates.push({ time: +gt.toFixed(4), centerY: +cy.toFixed(3), gap: GATE_GAP })
+      gates.push({ time: +gt.toFixed(4), centerY: +cy.toFixed(3), gap: +gap.toFixed(2) })
+      gi++
     }
   }
 
